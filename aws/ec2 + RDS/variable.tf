@@ -31,3 +31,19 @@ variable "data_cidr" {
     type = list(string)
     description = "cidr block for the data tier subnets"
 }
+
+
+variable "public_key" {
+    type = string
+    default = "~/.ssh/id_rsa.pub"
+}
+
+variable "ami-id" {
+  default = "ami-05cd35b907b4ffe77"
+  type = string
+}
+
+variable "private_key"{
+    type= string 
+    default = "~/.ssh/id_rsa"
+}
