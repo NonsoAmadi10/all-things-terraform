@@ -16,12 +16,24 @@ resource "aws_network_interface" "web-eni" {
     private_ips = [ "10.0.2.1", "10.0.3.1" ]
 }
 
+# Assign Elastic IPS to ENIs
+
+resource "aws_eip" "web-eips" {
+    count = length(var.web_cidr)
+    vpc = true 
+    network_interface = aws_network_interface.web-eni[count.index].id
+    depends_on = [
+      aws_internet_gateway.igw
+    ]
+}
+
 
 # Create EC2 Instance 
 resource "aws_instance" "web_server" {
     count = length(var.web_cidr)
     connection {
       private_key = file(var.private_key)
+      user = var.default_user
     }
     ami = var.ami-id
     instance_type = "t3.micro"
@@ -47,7 +59,8 @@ resource "aws_instance" "web_server" {
 # create AMI from ec2 instance
 
 resource "aws_ami_from_instance" "webserver-ami" {
-    source_instance_id = aws_instance.web_server.id 
+    count = length(var.web_cidr)
+    source_instance_id = aws_instance.web_server[count.index].id 
     name = "webserver-ami"
 
     tags = {
@@ -58,8 +71,9 @@ resource "aws_ami_from_instance" "webserver-ami" {
 # Create a Launch Template
 
 resource "aws_launch_template" "web_server_lt" {
+     count = length(var.web_cidr)
     name = "webserver-lt"
-    image_id = aws_ami_from_instance.webserver-ami.id 
+    image_id = aws_ami_from_instance.webserver-ami[count.index].id 
     instance_type = "t3.micro"
     key_name = "SRE"
 
@@ -77,6 +91,8 @@ resource "aws_placement_group" "webserver-placement" {
   
 }
 
+# Create an Autoscaling group
+
 resource "aws_autoscaling_group" "webserver-asg" {
   count = length(var.az)
   name = "webserver-asg"
@@ -90,14 +106,25 @@ resource "aws_autoscaling_group" "webserver-asg" {
 
   launch_template {
     
-    id = aws_launch_template.web_server_lt.id
+    id = aws_launch_template.web_server_lt[count.index].id
     version = "$Latest"
   }
 }
 
+# Create AutoScaling Policy 
+
+resource "aws_autoscaling_policy" "webserver-asp" {
+     count = length(var.web_cidr)
+    name = "webserver-asp"
+    scaling_adjustment = 4
+    adjustment_type = "ChangeInCapacity"
+    cooldown = 400 
+    autoscaling_group_name = aws_autoscaling_group.webserver-asg[count.index].name 
+}
+
 # Create a Loadbalancer Target Group
 resource "aws_lb_target_group" "webserver-lbtg" {
-  name = "webserver_lb_target_group"
+  name = "webserver-lb-target-group"
   port = 80 
   protocol = "HTTP"
   vpc_id = aws_vpc.terraform_vpc.id 
@@ -127,4 +154,73 @@ resource "aws_lb" "web-alb" {
     internal = false 
     load_balancer_type = "application"
     subnets = aws_subnet.public_subnets.*.id 
+
+    tags = {
+      "name" = "terraformALB"
+    }
+}
+
+# Create Application LoadBalancer Listener 
+
+resource "aws_lb_listener" "web-alb-listener" {
+  
+  load_balancer_arn = aws_lb.web-alb.arn 
+  port = "80"
+  protocol = "HTTP"
+
+  default_action {
+    
+    type = "forward"
+    target_group_arn = aws_lb_target_group.webserver-lbtg.arn 
+
+  }
+
+}
+
+# Terminate the created ec2 instance after AMI has been baked
+
+resource "null_resource" "postexecution" {
+  
+     count = length(var.web_cidr)
+    depends_on = [
+      aws_ami_from_instance.webserver-ami
+    ]
+
+    connection {
+      host = aws_instance.web_server[count.index].public_ip
+      user = var.default_user
+      #key_name = file(var.private_key)
+    }
+
+    provisioner "remote-exec" {
+    inline = [
+      "sudo init 0"
+    ]
+  }
+
+}
+
+# CloudWatch Alarm if CPU Usage hits a 70% threshold
+
+resource "aws_cloudwatch_metric_alarm" "webserver-health" {
+   count = length(var.web_cidr)
+  alarm_name = "ASGCpuUsage"
+  depends_on = [
+    aws_autoscaling_group.webserver-asg
+  ]
+
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods = 2
+  metric_name = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = "120"
+  statistic           = "Average"
+  threshold           = "70"
+
+    dimensions = {
+      AutoScalingGroupName = aws_autoscaling_group.webserver-asg[0].name
+    }
+
+  alarm_description = "This metric monitors ec2 cpu utilization"
+  alarm_actions = [ aws_autoscaling_group.webserver-asg[count.index].arn ]
 }

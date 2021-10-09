@@ -47,3 +47,8 @@ variable "private_key"{
     type= string 
     default = "~/.ssh/id_rsa"
 }
+
+variable "default_user" {
+    type = string
+    default = "ec2-user"
+}

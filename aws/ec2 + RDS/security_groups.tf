@@ -57,9 +57,8 @@ resource "aws_security_group" "allow_http" {
 
 resource "aws_security_group" "sg-rds" {
   vpc_id = aws_vpc.terraform_vpc.id 
-  count = length(var.web_cidr)
     ingress = [ {
-      cidr_blocks = [var.web_cidr[count.index]]
+      cidr_blocks = ["0.0.0.0/0"]
       description = "Allow HTTP"
       from_port = 5432
       ipv6_cidr_blocks = [ aws_vpc.terraform_vpc.ipv6_cidr_block ]
